@@ -115,15 +115,25 @@ The script detects installed applications and only migrates folders for apps tha
 ## Setup
 
 ### Windows
+
+By default, Windows blocks script execution for security. To allow the script to run:
+
 ```powershell
+# Option 1: Set execution policy for current user (recommended)
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
-.\migrate_userdata_v2.ps1 -WhatIf
+
+# Option 2: Run with bypass for single execution
+powershell -ExecutionPolicy Bypass -File .\migrate_userdata.ps1 -WhatIf
+
+# Option 3: Set execution policy for current process only
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\migrate_userdata.ps1 -WhatIf
 ```
 
 ### Linux/macOS
 ```bash
-chmod +x migrate_userdata_v2.sh
-./migrate_userdata_v2.sh -WhatIf
+chmod +x migrate_userdata.sh
+./migrate_userdata.sh -WhatIf
 ```
 
 ## License

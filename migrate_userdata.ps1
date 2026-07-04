@@ -37,15 +37,15 @@
     0=Errors only, 1=Normal, 2=Verbose
 
 .EXAMPLE
-    .\migrate_userdata_v2.ps1 -WhatIf
+    .\migrate_userdata.ps1 -WhatIf
     Show migration plans without making changes
 
 .EXAMPLE
-    .\migrate_userdata_v2.ps1 -DryRun -Folders ".vscode",".docker"
+    .\migrate_userdata.ps1 -DryRun -Folders ".vscode",".docker"
     Dry-run migration for specific folders only
 
 .EXAMPLE
-    .\migrate_userdata_v2.ps1 -ListLinks
+    .\migrate_userdata.ps1 -ListLinks
     Show all linked dot folders
 
 .NOTES
