@@ -5,14 +5,17 @@ Cross-platform tool for migrating user dot folders (dotfiles) to a custom locati
 ## Features
 
 - **Cross-platform**: Works on Windows (PowerShell), Linux, and macOS (Bash)
-- **Interactive selection**: Choose which dot folders to migrate
-- **Dry-run support**: Preview changes before applying them
-- **WhatIf mode**: Show migration plans without prompts
-- **Status reporting**: Comprehensive status of dot folders
-- **Reverse migration**: Unlink and restore folders to original location
+- **Menu-driven interface**: All features accessible through interactive menus
+- **WhatIf mode**: Preview migration plans before making changes
+- **DryRun mode**: Simulate migration on all folders
+- **ListLinks**: Show all linked dot folders and their targets
+- **Unlink**: Restore linked folders to original location with selection menu
+- **Status reporting**: Comprehensive status of dot folders (ready, linked, protected)
+- **FixBroken**: Detect and remove broken/invalid symlinks
+- **RemoveEmpty**: Remove empty dot folders
 - **App detection**: Automatically skips orphaned folders (no installed app)
 - **Protected folders**: Critical folders (.ssh, .config, .cache, .local) are protected
-- **Progress tracking**: Visual progress bar during migration
+- **Progress tracking**: Visual progress during migration
 - **Verification**: File count and size verification before/after migration
 - **Rollback**: Automatic rollback on failure
 - **Logging**: Detailed logs saved to migration_log.txt
@@ -24,65 +27,66 @@ Cross-platform tool for migrating user dot folders (dotfiles) to a custom locati
 | Windows  | `migrate_userdata.ps1` |
 | Linux/macOS | `migrate_userdata.sh` |
 
-## Usage
+## Quick Start
 
 ### Windows (PowerShell)
 
 ```powershell
-# Show what would be migrated
-.\migrate_userdata.ps1 -WhatIf
+# Run with bypass (no admin needed for WhatIf/ListLinks/Status)
+powershell -ExecutionPolicy Bypass -File .\migrate_userdata.ps1
 
-# Dry-run migration on specific folders
-.\migrate_userdata.ps1 -DryRun -Folders ".vscode",".docker"
-
-# List all linked dot folders
-.\migrate_userdata.ps1 -ListLinks
-
-# Reverse migration (unlink)
-.\migrate_userdata.ps1 -Unlink
-
-# Show comprehensive status
-.\migrate_userdata.ps1 -Status
-
-# Interactive migration (requires admin)
+# Or set execution policy for current user (recommended)
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 .\migrate_userdata.ps1
 ```
 
 ### Linux/macOS (Bash)
 
 ```bash
-# Show what would be migrated
-./migrate_userdata.sh -WhatIf
-
-# Dry-run migration on specific folders
-./migrate_userdata.sh -DryRun -Folders .vscode,.docker
-
-# List all linked dot folders
-./migrate_userdata.sh -ListLinks
-
-# Reverse migration (unlink)
-./migrate_userdata.sh -Unlink
-
-# Show comprehensive status
-./migrate_userdata.sh -Status
-
-# Interactive migration
+chmod +x migrate_userdata.sh
 ./migrate_userdata.sh
 ```
 
-## Parameters
+## Menu Options
 
-| Parameter | Description |
-|-----------|-------------|
-| `-TargetRoot` | Target directory for migrated dot folders (default: `D:\UserData` on Windows, `~/UserData` on Unix) |
-| `-DryRun` | Simulate migration without making actual changes |
-| `-WhatIf` | Show what would be migrated without prompts |
-| `-ListLinks` | List all currently linked dot folders and their targets |
-| `-Unlink` | Reverse migration - restore linked folders to original location |
-| `-Status` | Show comprehensive status of dot folders |
-| `-Folders` | Specify specific dot folders to migrate (comma-separated) |
-| `-LogLevel` | 0=Errors only, 1=Normal (default), 2=Verbose |
-| `-Help` | Show help message |
+When you run the script, you'll see:
+
+```
+=== UserData Migration Menu ===
+  1) WhatIf      - Show migration plans (no changes)
+  2) DryRun      - Simulate migration on all folders
+  3) ListLinks   - Show all linked dot folders and targets
+  4) Unlink      - Restore linked folders to original location
+  5) Status      - Show comprehensive status
+  6) FixBroken   - Fix broken symlinks
+  7) RemoveEmpty - Remove empty dot folders
+  8) Migrate     - Start interactive migration
+  9) Exit
+```
+
+### WhatIf (Option 1)
+Shows what would be migrated without making changes.
+
+### DryRun (Option 2)
+Simulates migration on all eligible folders.
+
+### ListLinks (Option 3)
+Shows list of dot folders that are currently linked and their target locations.
+
+### Unlink (Option 4)
+Shows list of linked folders, allows selection of which ones to restore.
+
+### Status (Option 5)
+Shows comprehensive status including ready/linked/protected folders.
+
+### FixBroken (Option 6)
+Finds and removes symlinks that point to non-existent targets.
+
+### RemoveEmpty (Option 7)
+Finds and removes empty dot folders (not linked or protected).
+
+### Migrate (Option 8)
+Interactive migration - select which folders to migrate.
 
 ## Protected Folders
 
@@ -110,30 +114,20 @@ The script detects installed applications and only migrates folders for apps tha
 3. **Symlink verification**: Confirms symlinks resolve correctly after migration
 4. **Backup rollback**: Creates `.bak_pending` before migration, removes on success
 5. **Process termination**: Stops processes using the folders before migration
-6. **Dry-run mode**: Test without making changes
 
-## Setup
+## Windows Execution Policy
 
-### Windows
-
-By default, Windows blocks script execution for security. To allow the script to run:
+Windows blocks script execution by default. Choose one method:
 
 ```powershell
-# Option 1: Set execution policy for current user (recommended)
+# Option 1: Set policy for current user (persistent, recommended)
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 
-# Option 2: Run with bypass for single execution
-powershell -ExecutionPolicy Bypass -File .\migrate_userdata.ps1 -WhatIf
+# Option 2: Bypass for single execution
+powershell -ExecutionPolicy Bypass -File .\migrate_userdata.ps1
 
-# Option 3: Set execution policy for current process only
+# Option 3: Set policy for current session only
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\migrate_userdata.ps1 -WhatIf
-```
-
-### Linux/macOS
-```bash
-chmod +x migrate_userdata.sh
-./migrate_userdata.sh -WhatIf
 ```
 
 ## License

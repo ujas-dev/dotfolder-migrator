@@ -1,29 +1,13 @@
 #!/bin/bash
 #
-# SYNOPSIS
-#     Interactive migration tool for user dot folders with selective selection and reverse operations.
+# UserData Migration Toolkit - Linux/macOS Version
+# Menu-driven interactive migration tool for user dot folders
 #
-# DESCRIPTION
-#     Migrates user dot folders from $HOME to a target location with symlinks.
-#     Supports interactive folder selection, unlink/reverse operations, and comprehensive safety features.
-#
-# USAGE
-#     ./migrate_userdata.sh -WhatIf           # Show migration plans
-#     ./migrate_userdata.sh -DryRun           # Simulate migration on all eligible folders
-#     ./migrate_userdata.sh -ListLinks         # Show all linked dot folders
-#     ./migrate_userdata.sh -Unlink           # Reverse migration
-#     ./migrate_userdata.sh -Status           # Show comprehensive status
-#     ./migrate_userdata.sh -Folders .aws,.azure,.gitlab  # Specific folders only
-#
-# NOTES
-#     - Run with sudo for actual migration (symlink creation).
-#     - Always run with -WhatIf or -DryRun first.
 
 set -euo pipefail
 
 # ---------- Configuration ----------
 TARGET_ROOT="${TARGET_ROOT:-$HOME/UserData}"
-WSL_TARGET="${WSL_TARGET:-$HOME/WindowsPrograms/WSL}"
 LOG_FILE="${LOG_FILE:-$TARGET_ROOT/migration_log.txt}"
 LOG_LEVEL="${LOG_LEVEL:-1}"
 
@@ -42,19 +26,16 @@ FOLDER_MAP[".ssh"]="ssh|git"
 FOLDER_MAP[".cache"]="npm|pip|node|python"
 FOLDER_MAP[".config"]="npm|node|git"
 FOLDER_MAP[".local"]="pip|python"
-FOLDER_MAP[".npm"]=""
-FOLDER_MAP[".pip"]=""
 
 NEVER_DELETE=(".ssh" ".config" ".cache" ".local")
 
 # ---------- UI Helpers ----------
-
 write_log() {
     local msg="$1"
     local color="${2:-white}"
     local level="${3:-1}"
     
-    if [[ $level -le $LOG_LEVEL ]]; then
+    [[ $level -le $LOG_LEVEL ]] && {
         case "$color" in
             red) tput setaf 1 ;;
             green) tput setaf 2 ;;
@@ -65,11 +46,9 @@ write_log() {
         esac
         echo "$msg"
         tput sgr0
-    fi
+    }
     
-    if [[ ! -d "$TARGET_ROOT" ]]; then
-        mkdir -p "$TARGET_ROOT"
-    fi
+    [[ ! -d "$TARGET_ROOT" ]] && mkdir -p "$TARGET_ROOT"
     echo "$(date -u '+%Y-%m-%d %H:%M:%SZ')  $msg" >> "$LOG_FILE"
 }
 
@@ -79,17 +58,14 @@ write_section() {
 }
 
 # ---------- Detection Functions ----------
-
 get_linked_folders() {
-    find "$HOME" -maxdepth 1 -type l -name ".*" -printf "%f|%l\n" 2>/dev/null | while IFS='|' read -r name target; do
-        [[ -n "$name" ]] && echo "$name|$target"
-    done
+    find "$HOME" -maxdepth 1 -type l -name ".*" -printf "%f|%l\n" 2>/dev/null || true
 }
 
-get_dot_folders() {
-    find "$HOME" -maxdepth 1 -type d -name ".*" ! -name ".*" -prune 2>/dev/null | while read -r dir; do
-        [[ -L "$dir" ]] || echo "$(basename "$dir")"
-    done | sort
+get_regular_folders() {
+    find "$HOME" -maxdepth 1 -mindepth 1 -maxdepth 1 -type d -name ".*" -printf "%f\n" 2>/dev/null | while read -r name; do
+        [[ ! -L "$HOME/$name" ]] && echo "$name"
+    done
 }
 
 get_folder_stats() {
@@ -102,8 +78,6 @@ get_folder_stats() {
 
 test_app_installed() {
     local patterns="$1"
-    local -a cmds=()
-    
     IFS='|' read -ra cmds <<< "$patterns"
     for cmd in "${cmds[@]}"; do
         [[ -n "$cmd" ]] && command -v "$cmd" &>/dev/null && return 0
@@ -111,41 +85,7 @@ test_app_installed() {
     return 1
 }
 
-get_processes_using_folder() {
-    local folder="$1"
-    local proc_name=""
-    
-    case "$folder" in
-        .vscode|.vscode-shared) proc_name="code" ;;
-        .antigravity-ide) proc_name="antigravity" ;;
-        .docker) proc_name="docker" ;;
-        .gemini) proc_name="gemini" ;;
-        .codex) proc_name="codex" ;;
-        .copilot) proc_name="copilot" ;;
-        .codeium) proc_name="codeium" ;;
-        .openshot_qt) proc_name="openshot-qt" ;;
-    esac
-    
-    [[ -n "$proc_name" ]] && pgrep -x "$proc_name" 2>/dev/null || true
-}
-
-stop_blocking_process() {
-    local folder="$1"
-    local source_path="$2"
-    local procs
-    procs=$(get_processes_using_folder "$folder")
-    
-    if [[ -n "$procs" ]]; then
-        for pid in $procs; do
-            write_log "  Stopping running process (PID $pid) before migration..." "yellow" 1
-            [[ "$DRY_RUN" != "1" ]] && kill -9 "$pid" 2>/dev/null || true
-        done
-        sleep 2
-    fi
-}
-
-# ---------- Core Migration Functions ----------
-
+# ---------- Core Migration ----------
 move_folder_safely() {
     local source_path="$1"
     local dest_path="$2"
@@ -157,262 +97,237 @@ move_folder_safely() {
     
     write_log "  Source: $src_count files, $(echo "scale=2; $src_size/1048576" | bc) MB"
     
-    if [[ -d "$dest_path" || -L "$dest_path" ]]; then
-        write_log "  Target exists - skipping" "yellow" 1
-        return 0
-    fi
+    [[ -d "$dest_path" ]] && write_log "  Target exists - skipping" "yellow" && return 0
     
     if [[ "$DRY_RUN" != "1" ]]; then
-        write_log "  Copying to $dest_path..." "yellow" 1
-        cp -a "$source_path"/. "$dest_path/" 2>/dev/null || mkdir -p "$dest_path" && cp -a "$source_path"/. "$dest_path/"
+        cp -a "${source_path}/." "${dest_path}/" 2>/dev/null || mkdir -p "$dest_path"
+        dest_stats=$(get_folder_stats "$dest_path")
     else
-        write_log "  [DRY-RUN] Would copy to $dest_path" "cyan" 1
+        write_log "  [DRY-RUN] Would copy to $dest_path" "cyan"
+        dest_stats="$src_stats"
     fi
     
-    dest_stats=$(get_folder_stats "$dest_path")
     IFS='|' read -r dest_count dest_size <<< "$dest_stats"
     
-    if [[ "$src_count" -ne "$dest_count" ]]; then
-        write_log "  [FAIL] Copy verification mismatch for $folder_name." "red" 1
-        [[ "$DRY_RUN" != "1" ]] && rm -rf "$dest_path"
-        return 1
-    fi
+    [[ "$src_count" -ne "$dest_count" ]] && write_log "  [FAIL] Copy mismatch" "red" && return 1
     
     if [[ "$DRY_RUN" != "1" ]]; then
         mv "$source_path" "${source_path}.bak_pending" 2>/dev/null || return 1
         ln -s "$dest_path" "$source_path" 2>/dev/null || {
-            write_log "  [FAIL] Symlink creation failed for $folder_name. Restoring original." "red" 1
+            write_log "  [FAIL] Symlink failed" "red"
             mv "${source_path}.bak_pending" "$source_path" 2>/dev/null || true
             rm -rf "$dest_path"
             return 1
         }
-        write_log "  [OK] $folder_name migrated -> $dest_path" "green" 1
+        write_log "  [OK] $folder_name migrated -> $dest_path" "green"
     else
-        write_log "  [DRY-RUN] Would rename original and create symlink to $dest_path" "green" 1
+        write_log "  [DRY-RUN] Would create symlink" "green"
     fi
     return 0
 }
 
-# ---------- Unlink/Reverse Migration ----------
-
-undo_migration() {
-    local folders=("${@}")
-    local linked reversed=0
-    
-    write_section "Reversing migration (unlink)"
-    
-    for folder in "${folders[@]}"; do
-        local source_path="$HOME/$folder"
-        local target_path
-        target_path=$(get_linked_folders | grep "^$folder|" | cut -d'|' -f2)
-        
-        [[ -z "$target_path" ]] && continue
-        
-        write_log "[UNLINK] $folder -> $target_path" "yellow" 1
-        
-        if [[ "$DRY_RUN" != "1" ]]; then
-            rm -f "$source_path" 2>/dev/null || continue
-            [[ -d "$target_path" ]] && mv "$target_path" "$source_path" 2>/dev/null || true
-            ((reversed++)) || true
-            write_log "  [OK] Restored $folder to original location" "green" 1
-        fi
-    done
-    write_log "Reversed $reversed folders."
-}
-
-# ---------- Main Functions ----------
-
-show_status() {
-    write_section "UserData Migration Status"
-    
-    write_log "User home: $HOME"
-    write_log "Target root: $TARGET_ROOT"
-    echo ""
-    
-    local dot_folders linked ready linked_count protected_count
-    dot_folders=$(get_dot_folders)
+# ---------- Menu Functions ----------
+show_linked_folders() {
+    write_section "Linked dot folders"
+    local linked
     linked=$(get_linked_folders)
+    [[ -z "$linked" ]] && write_log "No linked dot folders found." "darkgray" && return
     
-    local -a ready_to_migrate=() already_linked=() protected=()
-    
-    while IFS= read -r f; do
-        local target_path
-        target_path=$(echo "$linked" | grep "^$f|" | cut -d'|' -f2 || true)
-        
-        if [[ -n "$target_path" ]]; then
-            already_linked+=("$f")
-        elif [[ " ${NEVER_DELETE[*]} " =~ " $f " ]]; then
-            protected+=("$f")
-        else
-            ready_to_migrate+=("$f")
-        fi
-    done <<< "$dot_folders"
-    
-    (( ${#already_linked[@]} )) > 0 && write_log "Already linked: ${already_linked[*]}" "green" 1
-    (( ${#ready_to_migrate[@]} )) > 0 && write_log "Ready to migrate: ${ready_to_migrate[*]}" "cyan" 1
-    (( ${#protected[@]} )) > 0 && write_log "Protected: ${protected[*]}" "yellow" 1
+    echo "$linked" | while IFS='|' read -r name target; do
+        write_log "  $name -> $target" "white" 1
+    done
 }
 
 show_whatif() {
     write_section "WhatIf: Migration plans (no changes will be made)"
-    
-    local dot_folders linked
-    dot_folders=$(get_dot_folders)
+    local linked regular
     linked=$(get_linked_folders)
+    regular=$(get_regular_folders)
     
     while IFS= read -r f; do
-        local target_path
+        [[ -z "$f" ]] && continue
+        local stats target_path
+        stats=$(get_folder_stats "$HOME/$f")
+        IFS='|' read -r count size <<< "$stats"
+        
         target_path=$(echo "$linked" | grep "^$f|" | cut -d'|' -f2 || true)
         
         if [[ -n "$target_path" ]]; then
-            write_log "[SKIP] $f - already linked to $target_path" "darkgray" 1
+            write_log "[SKIP] $f - already linked" "darkgray" 1
         elif [[ " ${NEVER_DELETE[*]} " =~ " $f " ]]; then
-            write_log "[KEEP] $f - protected folder (would skip)" "yellow" 1
+            write_log "[KEEP] $f - protected folder" "yellow" 1
         else
-            write_log "[MIGRATE] $f -> $TARGET_ROOT/$f" "green" 1
+            local patterns="${FOLDER_MAP[$f]:-}"
+            [[ -n "$patterns" ]] && ! test_app_installed "$patterns" && continue
+            write_log "[MIGRATE] $f - $count files -> $TARGET_ROOT/$f" "green" 1
         fi
-    done <<< "$dot_folders"
+    done <<< "$regular"
 }
 
-show_list_links() {
-    write_section "Linked dot folders"
+show_status() {
+    write_section "UserData Migration Status"
+    write_log "User home: $HOME"
+    write_log "Target root: $TARGET_ROOT"
     
+    local linked regular ready already protected
+    linked=$(get_linked_folders)
+    regular=$(get_regular_folders)
+    
+    ready="" already="" protected=""
+    
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        target_path=$(echo "$linked" | grep "^$f|" | cut -d'|' -f2 || true)
+        if [[ -n "$target_path" ]]; then
+            already="$already $f"
+        elif [[ " ${NEVER_DELETE[*]} " =~ " $f " ]]; then
+            protected="$protected $f"
+        else
+            local patterns="${FOLDER_MAP[$f]:-}"
+            [[ -n "$patterns" ]] && ! test_app_installed "$patterns" && continue
+            ready="$ready $f"
+        fi
+    done <<< "$regular"
+    
+    [[ -n "$already" ]] && write_log "Already linked:$already" "green" 1
+    [[ -n "$ready" ]] && write_log "Ready to migrate:$ready" "cyan" 1
+    [[ -n "$protected" ]] && write_log "Protected:$protected" "yellow" 1
+}
+
+fix_broken_links() {
+    write_section "Fixing broken symlinks"
+    local broken=0
+    
+    find "$HOME" -maxdepth 1 -type l -name ".*" 2>/dev/null | while read -r link; do
+        [[ ! -e "$link" ]] && {
+            local name target
+            name=$(basename "$link")
+            target=$(readlink "$link" 2>/dev/null || true)
+            write_log "[BROKEN] $name -> $target (target missing)" "red" 1
+            rm -f "$link"
+            write_log "  Removed broken symlink" "green" 1
+            ((broken++)) || true
+        }
+    done
+    write_log "Fixed $broken broken symlinks."
+}
+
+unlink_folders() {
+    write_section "Unlink: Select folders to restore"
     local linked
     linked=$(get_linked_folders)
     
     if [[ -z "$linked" ]]; then
-        write_log "No linked dot folders found." "darkgray" 1
-    else
-        echo "$linked" | while IFS='|' read -r name target; do
-            write_log "  $name -> $target" "white" 1
-        done
+        write_log "No linked folders found." "darkgray"
+        return
     fi
+    
+    echo "$linked" | while IFS='|' read -r name target; do
+        [[ -z "$name" ]] && continue
+        [[ " ${NEVER_DELETE[*]} " =~ " $name " ]] && continue
+        write_log "$name -> $target" "white" 1
+    done
+    
+    read -p "Select folders to unlink (comma-separated numbers, 'all', 'none', or 'menu'): " choice
+    [[ "$choice" == "menu" ]] && return
+    [[ "$choice" == "none" ]] && return
 }
 
-# ---------- Argument Parsing ----------
+remove_empty_folders() {
+    write_section "Removing empty dot folders"
+    local removed=0
+    
+    find "$HOME" -maxdepth 1 -mindepth 1 -maxdepth 1 -type d -name ".*" -print0 2>/dev/null | while IFS= read -r -d '' dir; do
+        local name target
+        name=$(basename "$dir")
+        target=$(readlink "$dir" 2>/dev/null || true)
+        
+        # Skip symlinks
+        [[ -n "$target" ]] && continue
+        
+        # Skip protected
+        [[ " ${NEVER_DELETE[*]} " =~ " $name " ]] && continue
+        
+        local count
+        count=$(find "$dir" -mindepth 1 2>/dev/null | wc -l)
+        if [[ $count -eq 0 ]]; then
+            write_log "[EMPTY] $name - removing" "yellow" 1
+            rm -rf "$dir"
+            ((removed++)) || true
+        fi
+    done
+    write_log "Removed $removed empty dot folders."
+}
 
-DRY_RUN=0
-WHATIF=0
-LISTLINKS=0
-UNLINK=0
-STATUS=0
-FOLDERS=""
+do_migration() {
+    write_section "Interactive Migration"
+    write_log "Target root: $TARGET_ROOT"
+    
+    local regular linked index=1 index_map=()
+    regular=$(get_regular_folders)
+    linked=$(get_linked_folders)
+    
+    echo ""
+    echo "Available dot folders:"
+    
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        [[ " ${NEVER_DELETE[*]} " =~ " $f " ]] && continue
+        local target=$(echo "$linked" | grep "^$f|" | cut -d'|' -f2 || true)
+        [[ -n "$target" ]] && continue
+        
+        # Check if app is detected
+        local patterns="${FOLDER_MAP[$f]:-}"
+        local app_detected=1
+        if [[ -n "$patterns" ]]; then
+            test_app_installed "$patterns" || app_detected=0
+        fi
+        
+        if [[ $app_detected -eq 1 ]]; then
+            echo "[$index] $f (app detected)"
+        else
+            echo "[$index] $f (unknown/orphan - will migrate anyway)" | sed 's/^/\\033[33m/; s/$/\\033[0m/'
+        fi
+        index_map[$index]=$f
+        ((index++)) || true
+    done <<< "$regular"
+    
+    if [[ ${#index_map[@]} -eq 0 ]]; then
+        write_log "No folders available for migration." "darkgray"
+        return
+    fi
+    
+    read -p "Select folders to migrate (comma-separated numbers, 'all', 'none', or 'menu'): " choice
+    [[ "$choice" == "menu" ]] && return
+    [[ "$choice" == "none" ]] && return
+}
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -DryRun) DRY_RUN=1; shift ;;
-        -WhatIf) WHATIF=1; shift ;;
-        -ListLinks) LISTLINKS=1; shift ;;
-        -Unlink) UNLINK=1; shift ;;
-        -Status) STATUS=1; shift ;;
-        -Folders) FOLDERS="${2:-}"; shift 2 ;;
-        -TargetRoot) TARGET_ROOT="$2"; shift 2 ;;
-        -Help|--help|-h) echo "Usage: $0 [-DryRun|-WhatIf|-ListLinks|-Unlink|-Status|-Folders folder1,folder2]"; exit 0 ;;
-        *) shift ;;
+# ---------- Main Loop ----------
+while true; do
+    echo ""
+    echo "=== UserData Migration Menu ===" | sed 's/^/\\033[36m/; s/$/\\033[0m/'
+    echo "  1) WhatIf      - Show migration plans (no changes)"
+    echo "  2) DryRun      - Simulate migration on all folders"
+    echo "  3) ListLinks   - Show all linked dot folders"
+    echo "  4) Unlink      - Restore linked folders to original location"
+    echo "  5) Status      - Show comprehensive status"
+    echo "  6) FixBroken   - Fix broken symlinks"
+    echo "  7) RemoveEmpty - Remove empty dot folders"
+    echo "  8) Migrate     - Start interactive migration"
+    echo "  9) Exit"
+    
+    read -p "Select option (1-9): " choice
+    
+    case "$choice" in
+        1) show_whatif ;;
+        2) DRY_RUN=1; do_migration ;;
+        3) show_linked_folders ;;
+        4) unlink_folders ;;
+        5) show_status ;;
+        6) fix_broken_links ;;
+        7) remove_empty_folders ;;
+        8) do_migration ;;
+        9) exit 0 ;;
+        *) write_log "Invalid option. Try again." "red" 1 ;;
     esac
 done
-
-# ---------- Main Execution ----------
-
-if [[ $LISTLINKS -eq 1 ]]; then
-    show_list_links
-    exit 0
-fi
-
-if [[ $STATUS -eq 1 ]]; then
-    show_status
-    exit 0
-fi
-
-if [[ $WHATIF -eq 1 ]]; then
-    show_whatif
-    exit 0
-fi
-
-if [[ $UNLINK -eq 1 ]]; then
-    linked=$(get_linked_folders | cut -d'|' -f1 || true)
-    [[ -z "$linked" ]] && write_log "No linked folders to unlink." "darkgray" 1 && exit 0
-    
-    if [[ -n "$FOLDERS" ]]; then
-        IFS=',' read -ra to_unlink <<< "$FOLDERS"
-    else
-        IFS='|' read -ra to_unlink <<< "$linked"
-    fi
-    undo_migration "${to_unlink[@]}"
-    exit 0
-fi
-
-# Normal migration mode
-write_section "Pre-flight checks"
-write_log "Running as: $(if [[ $EUID -eq 0 ]]; then echo 'root'; else echo 'user (dry-run mode)'; fi)" "green" 1
-write_log "Target root: $TARGET_ROOT"
-write_log "Dry run: $(if [[ $DRY_RUN -eq 1 ]]; then echo 'True'; else echo 'False'; fi)"
-
-dot_folders=$(get_dot_folders)
-
-if [[ -z "$dot_folders" ]]; then
-    write_log "No dot folders found in user profile." "darkgray" 1
-    exit 0
-fi
-
-# Select folders
-if [[ -n "$FOLDERS" ]]; then
-    IFS=',' read -ra selected_folders <<< "$FOLDERS"
-else
-    selected_folders=()
-    echo ""
-    write_log "Available dot folders for migration:" "cyan" 1
-    i=1
-    while IFS= read -r f; do
-        echo "[$i] $f"
-        ((i++)) || true
-        selected_folders+=("$f")
-    done <<< "$dot_folders"
-    echo ""
-    read -p "Select folders to migrate (comma-separated numbers, or 'all' or 'none'): " choice
-    if [[ "$choice" == "all" ]]; then
-        selected_folders=("${selected_folders[@]}")
-    elif [[ "$choice" == "none" ]]; then
-        selected_folders=()
-    else
-        selected_folders=()
-        IFS=',' read -ra nums <<< "$choice"
-        for n in "${nums[@]}"; do
-            n=$(echo "$n" | tr -d ' ')
-            [[ $n -gt 0 && $n -lt $i ]] && selected_folders+=("${selected_folders[$n-1]}")
-        done
-    fi
-fi
-
-if [[ ${#selected_folders[@]} -eq 0 ]]; then
-    write_log "No folders selected. Exiting." "darkgray" 1
-    exit 0
-fi
-
-write_section "Migrating selected folders (${#selected_folders[@]} folders)"
-
-for folder in "${selected_folders[@]}"; do
-    source_path="$HOME/$folder"
-    patterns="${FOLDER_MAP[$folder]:-}"
-    
-    if [[ ! -d "$source_path" ]]; then
-        continue
-    fi
-    
-    if [[ " ${NEVER_DELETE[*]} " =~ " $folder " ]]; then
-        write_log "[KEEP] $folder - protected folder." "yellow" 1
-        continue
-    fi
-    
-    if [[ -n "$patterns" ]] && ! test_app_installed "$patterns"; then
-        write_log "[ORPHAN] $folder - no matching app installed." "red" 1
-        continue
-    fi
-    
-    stop_blocking_process "$folder" "$source_path"
-    dest_path="$TARGET_ROOT/$folder"
-    move_folder_safely "$source_path" "$dest_path" "$folder"
-done
-
-write_section "Summary"
-write_log "Full log saved to $LOG_FILE"
