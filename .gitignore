@@ -1,0 +1,19 @@
+# Logs
+migration_log.txt
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# PowerShell
+*.ps1xml
+*.psd1
+*.psm1
+
+# Temp files
+*.bak
+*.tmp
+*.swp
