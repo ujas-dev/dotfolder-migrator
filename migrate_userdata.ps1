@@ -13,12 +13,32 @@
 
 param(
     [string]$TargetRoot = "D:\UserData",
-    [int]$LogLevel = 1
+    [int]$LogLevel = 1,
+    [switch]$DryRun,
+    [switch]$Help
 )
+
+if ($Help) {
+    Write-Host @"
+Usage: migrate_userdata.ps1 [-TargetRoot PATH] [-LogLevel N] [-DryRun] [-Help]
+
+  -TargetRoot PATH   Target directory for migrated data (default: D:\UserData)
+  -LogLevel N        Logging verbosity 0-2 (default: 1)
+  -DryRun            Simulate without making any changes
+  -Help              Show this help message
+
+Examples:
+  .\migrate_userdata.ps1                          # Interactive menu
+  .\migrate_userdata.ps1 -DryRun                  # Simulate first
+  .\migrate_userdata.ps1 -TargetRoot E:\UserData  # Custom target
+"@
+    exit 0
+}
 
 $ErrorActionPreference = "Stop"
 $UserHome = $env:USERPROFILE
 $LogFile = Join-Path $TargetRoot "migration_log.txt"
+$script:GlobalDryRun = $false
 
 # ---------- UI Helpers ----------
 function Write-Log {
@@ -115,11 +135,11 @@ $FolderMap = @{
     ".config"          = @{ NamePatterns=@(); CommandNames=@("npm","node","git"); PathHints=@() }
     ".local"           = @{ NamePatterns=@(); CommandNames=@("pip","python"); PathHints=@() }
 }
-$NeverDelete = @(".ssh", ".config", ".cache", ".local")
+$NeverDelete = @(".ssh", ".cache", ".local")
 
 # ---------- Core Migration Functions ----------
 function Move-FolderSafely {
-    param([string]$SourcePath, [string]$DestPath, [string]$FolderName, [bool]$DryRun)
+    param([string]$SourcePath, [string]$DestPath, [string]$FolderName, [bool]$DryRun = $script:GlobalDryRun)
     
     $srcStats = Get-FolderStats -Path $SourcePath
     Write-Log "  Source: $($srcStats.Count) files, $([math]::Round($srcStats.Size/1MB,2)) MB"
@@ -129,41 +149,38 @@ function Move-FolderSafely {
         return $true
     }
     
-    if (-not $DryRun) {
-        Copy-Item -Path $SourcePath -Destination $DestPath -Recurse -Force
-        $destStats = Get-FolderStats -Path $DestPath
-    } else {
+    if ($DryRun) {
         Write-Log "  [DRY-RUN] Would copy to $DestPath" "Cyan"
-        $destStats = $srcStats
+        Write-Log "  [DRY-RUN] Would rename and create symlink" "Green"
+        return $true
     }
+
+    Copy-Item -Path $SourcePath -Destination $DestPath -Recurse -Force
+    $destStats = Get-FolderStats -Path $DestPath
     Write-Log "  Copied: $($destStats.Count) files, $([math]::Round($destStats.Size/1MB,2)) MB"
     
     if ($destStats.Count -ne $srcStats.Count) {
         Write-Log "  [FAIL] Copy verification mismatch for $FolderName." "Red"
-        if (-not $DryRun) { Remove-Item -Path $DestPath -Recurse -Force }
+        Remove-Item -Path $DestPath -Recurse -Force
         return $false
     }
-    
-    if (-not $DryRun) {
-        Rename-Item -Path $SourcePath -NewName "$SourcePath.bak_pending" -ErrorAction Stop
-        try {
-            New-Item -ItemType SymbolicLink -Path $SourcePath -Target $DestPath -ErrorAction Stop | Out-Null
-            Remove-Item -Path "$SourcePath.bak_pending" -Recurse -Force
-            Write-Log "  [OK] $FolderName migrated -> $DestPath" "Green"
-        } catch {
-            Write-Log "  [FAIL] Symlink creation failed. Restoring." "Red"
-            Rename-Item -Path "$SourcePath.bak_pending" -NewName $SourcePath -ErrorAction SilentlyContinue
-            Remove-Item -Path $DestPath -Recurse -Force
-            return $false
-        }
-    } else {
-        Write-Log "  [DRY-RUN] Would rename and create symlink" "Green"
+
+    Rename-Item -Path $SourcePath -NewName "$SourcePath.bak_pending" -ErrorAction Stop
+    try {
+        New-Item -ItemType SymbolicLink -Path $SourcePath -Target $DestPath -ErrorAction Stop | Out-Null
+        Remove-Item -Path "$SourcePath.bak_pending" -Recurse -Force
+        Write-Log "  [OK] $FolderName migrated -> $DestPath" "Green"
+    } catch {
+        Write-Log "  [FAIL] Symlink creation failed. Restoring." "Red"
+        Rename-Item -Path "$SourcePath.bak_pending" -NewName $SourcePath -ErrorAction SilentlyContinue
+        Remove-Item -Path $DestPath -Recurse -Force
+        return $false
     }
     return $true
 }
 
 function Stop-BlockingProcess {
-    param([string]$FolderPath, [bool]$DryRun)
+    param([string]$FolderPath, [bool]$DryRun = $script:GlobalDryRun)
     $procs = Get-ProcessesUsingFolder -FolderPath $FolderPath
     if ($procs) {
         foreach ($p in $procs) {
@@ -175,7 +192,7 @@ function Stop-BlockingProcess {
 }
 
 function Undo-Migration {
-    param([string[]]$Folders, [bool]$DryRun)
+    param([string[]]$Folders, [bool]$DryRun = $script:GlobalDryRun)
     Write-Section "Reversing migration (unlink)"
     $linked = Get-LinkedFolders
     $reversed = 0
@@ -187,23 +204,27 @@ function Undo-Migration {
         
         Write-Log "[UNLINK] $folder -> $targetPath" "Yellow"
         
-        if (-not $DryRun) {
-            Stop-BlockingProcess -FolderPath $sourcePath -DryRun $false
-            Start-Sleep -Seconds 3
-            
-            Remove-Item -Path $sourcePath -Force -ErrorAction SilentlyContinue
-            
-            if (Test-Path $targetPath) {
-                try {
-                    robocopy "$targetPath" "$sourcePath" /E /MOVE /R:2 /W:2 | Out-Null
-                    $reversed++
-                    Write-Log "  [OK] Restored $folder to original location" "Green"
-                } catch {
-                    Write-Log "  [FAIL] Could not restore $folder - file may be locked. Retry manually." "Red"
-                }
-            } else {
-                Write-Log "  [WARN] Target already moved or missing for $folder" "Yellow"
+        if ($DryRun) {
+            Write-Log "  [DRY-RUN] Would restore $folder to original location" "Green"
+            $reversed++
+            continue
+        }
+        
+        Stop-BlockingProcess -FolderPath $sourcePath -DryRun $false
+        Start-Sleep -Seconds 3
+        
+        Remove-Item -Path $sourcePath -Force -ErrorAction SilentlyContinue
+        
+        if (Test-Path $targetPath) {
+            try {
+                robocopy "$targetPath" "$sourcePath" /E /MOVE /R:2 /W:2 | Out-Null
+                $reversed++
+                Write-Log "  [OK] Restored $folder to original location" "Green"
+            } catch {
+                Write-Log "  [FAIL] Could not restore $folder - file may be locked. Retry manually." "Red"
             }
+        } else {
+            Write-Log "  [WARN] Target already moved or missing for $folder" "Yellow"
         }
     }
     Write-Log "Reversed $reversed folders."
@@ -245,6 +266,10 @@ function Select-FromList {
 }
 
 function Show-Menu {
+    if ($DryRun -or $script:GlobalDryRun) {
+        Write-Section "Dry-run mode active (-DryRun CLI flag)"
+        $script:GlobalDryRun = $true
+    }
     while ($true) {
         Write-Host ""
         Write-Host "=== UserData Migration Menu ===" -ForegroundColor Cyan
@@ -257,11 +282,12 @@ function Show-Menu {
         Write-Host "  7) RemoveEmpty - Remove empty dot folders"
         Write-Host "  8) Migrate     - Start interactive migration"
         Write-Host "  9) Exit"
+        if ($script:GlobalDryRun) { Write-Host "  NOTE: DryRun is ACTIVE - all actions are simulated" -ForegroundColor Cyan }
         $choice = Read-Host "Select option (1-9)"
         
         # Ask for target root on first run
         if (-not (Get-Variable -Name TargetRootAsked -ErrorAction SilentlyContinue)) {
-            $custom = Read-Host "Enter target root path (press Enter for default: D:\UserData)"
+            $custom = Read-Host "Enter target root path (press Enter for default: $TargetRoot)"
             if ($custom) { $script:TargetRoot = $custom }
             $script:LogFile = Join-Path $script:TargetRoot "migration_log.txt"
             $script:TargetRootAsked = $true
@@ -286,6 +312,7 @@ function Show-Menu {
             
             "2" { 
                 Write-Section "Dry-run: Processing all eligible folders"
+                $script:GlobalDryRun = $true
                 $folders = Get-RegularFolders
                 $linked = Get-LinkedFolders
                 foreach ($f in $folders) {
@@ -295,6 +322,7 @@ function Show-Menu {
                     $stats = Get-FolderStats -Path (Join-Path $UserHome $f)
                     Write-Log "  [DRY-RUN] $f - $($stats.Count) files -> $TargetRoot\$f" "Cyan"
                 }
+                $script:GlobalDryRun = $false
             }
             
             "3" { 
@@ -304,11 +332,12 @@ function Show-Menu {
             
             "4" { 
                 Write-Section "Unlink: Select folders to restore"
+                if (-not $DryRun) { $script:GlobalDryRun = $false }
                 $indexMap = Show-LinkedFoldersList
                 if ($indexMap.Count -gt 0) {
                     $selection = Select-FromList -IndexMap $indexMap -Prompt "Select folders to unlink"
                     if ($selection -eq "menu") { continue }
-                    Undo-Migration -Folders $selection -DryRun $false
+                    Undo-Migration -Folders $selection
                 }
             }
             
@@ -338,6 +367,7 @@ function Show-Menu {
             
             "6" { 
                 Write-Section "Fixing broken symlinks"
+                if (-not $DryRun) { $script:GlobalDryRun = $false }
                 $allFolders = Get-ChildItem -Path $UserHome -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".*" -and $_.PsIsContainer }
                 $broken = 0
                 foreach ($f in $allFolders) {
@@ -356,9 +386,11 @@ function Show-Menu {
             
             "7" { 
                 Write-Section "Removing empty dot folders"
+                if (-not $DryRun) { $script:GlobalDryRun = $false }
                 $allFolders = Get-ChildItem -Path $UserHome -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".*" -and $_.PsIsContainer -and $_.LinkType -eq $null }
                 $removed = 0
                 foreach ($f in $allFolders) {
+                    if ($NeverDelete -contains $f.Name) { continue }
                     $itemCount = (Get-ChildItem -Path $f.FullName -Force -ErrorAction SilentlyContinue | Measure-Object).Count
                     if ($itemCount -eq 0) {
                         Write-Log "[EMPTY] $($f.Name) - removing" "Yellow"
@@ -371,6 +403,7 @@ function Show-Menu {
             
             "8" { 
                 Write-Section "Interactive Migration"
+                if (-not $DryRun) { $script:GlobalDryRun = $false }
                 $folders = Get-RegularFolders
                 $linked = Get-LinkedFolders
                 $indexMap = @{}
@@ -404,8 +437,8 @@ function Show-Menu {
                 foreach ($f in $selection) {
                     $source = Join-Path $UserHome $f
                     $dest = Join-Path $TargetRoot $f
-                    Stop-BlockingProcess -FolderPath $source -DryRun $false
-                    Move-FolderSafely -SourcePath $source -DestPath $dest -FolderName $f -DryRun $false
+                    Stop-BlockingProcess -FolderPath $source
+                    Move-FolderSafely -SourcePath $source -DestPath $dest -FolderName $f
                 }
             }
             

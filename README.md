@@ -92,7 +92,6 @@ Interactive migration - select which folders to migrate.
 
 The following folders are protected and will never be migrated:
 - `.ssh`
-- `.config`
 - `.cache`
 - `.local`
 
